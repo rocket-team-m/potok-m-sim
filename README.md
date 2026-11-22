@@ -139,4 +139,3 @@ position/velocity error → desired tilt, minus body-rate damping), clamped to
 ±0.12 rad, with an infinite-horizon approximation rather than a solved
 Riccati equation or online MPC. It sees true state and wind, so it is an upper
 bound on the sensor-only model. It is zeroed on pad/boost by the AI interlock.
-

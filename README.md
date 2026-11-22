@@ -1,4 +1,4 @@
-![Поток-М — симулятор](docs/banner.svg)
+![Поток-М](docs/banner.svg)
 
 [![CI](https://github.com/rocket-team-m/potok-m-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/rocket-team-m/potok-m-sim/actions/workflows/ci.yml)
 

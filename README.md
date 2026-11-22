@@ -1,40 +1,229 @@
-![Поток-М — симулятор](docs/banner.svg)
+![Поток-М: Симулятор](docs/banner.svg)
 
-[![CI](https://github.com/rocket-team-m/potok-m-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/rocket-team-m/potok-m-sim/actions/workflows/ci.yml)
+<sub>#0c0c0c · `#f5a524` · моно-индексы · тонкие правила · без эмодзи</sub>
 
-# Поток-М: симулятор
+# ПОТОК-М / СИМУЛЯТОР
 
-Детерминированный 6-DoF симулятор ракеты «Поток-М»: генерация данных для обучения бортового ИИ, отладка алгоритмов управления и регрессионные тесты.
+Детерминированный генератор обучающих данных для бортового ИИ «Поток-М», стенд для отладки контура управления и набор регрессионных гейтов. Оракул, а не двойник: среда знает истинное состояние, ветер и команду эталонного регулятора — и отдаёт это учителю через привилегированный сайдкар. На пуске она не является единственным источником истины.
 
-> Инженерный прототип. Аэродинамика — плейсхолдеры; среда пригодна для отладки архитектуры и обучения, но **не является цифровым двойником** и не может быть единственным источником истины на пуске.
+[CI: sim / rust](https://github.com/rocket-team-m/potok-m-sim/actions/workflows/ci.yml) · [BUILD_LOG.md](BUILD_LOG.md) · [SIM_FIDELITY.md](SIM_FIDELITY.md) · [SPEC_DATA.md](SPEC_DATA.md)
 
-## Ссылки
+---
 
-- [BUILD_LOG.md](BUILD_LOG.md) — решения по физике и формату
-- [potok-m-protocol](https://github.com/rocket-team-m/potok-m-protocol) — генератор кадров UART
-- [potok-m-ai](https://github.com/rocket-team-m/potok-m-ai) — потребитель `validation.bin`
-- [Спецификация идеального контура](https://github.com/rocket-team-m/potok-m/blob/main/SPEC_ENGINE_IDEAL.md)
-- [Документация проекта](https://rocket-team-m.github.io/potok-m/)
+## 00 / Зачем это существует
 
-## Архитектура
+Один и тот же вопрос — «выучил ли ИИ управлять ракетой?» — невозможно задать, если каждый прогон даёт другие данные, а ветер и эталонная команда недоступны никому, кроме модели. Этот репозиторий решает три задачи:
 
-```mermaid
-flowchart LR
-    CFG["config/default.toml"] --> DYN["core: динамика 6-DoF<br/>RK4, шаг 0,002 с"]
-    DYN --> ATM["Атмосфера и ветер<br/>профиль / сдвиг / порыв / турбулентность"]
-    ATM --> SENS["Датчики<br/>шум / смещение / задержка / квантование"]
-    SENS --> FRAME["Кадр UART 50 Гц<br/>через potok-protocol"]
-    SENS --> PHYS["Физпризнаки<br/>8 + 6 = 14"]
-    FRAME --> VAL["validation.bin v2"]
-    PHYS --> VAL
-    VAL --> AI["potok-m-ai"]
+01. **Воспроизводимость.** Каждая случайная величина выводится из `run.seed` и номера эпизода через `SplitMix64` и локальные `StdRng`. Нет глобального ГПСЧ, нет часов, нет зависимости от числа потоков. Последовательный и параллельный (rayon) прогоны дают битово идентичные эпизоды.
+02. **Оракул.** `ReferenceOptimizer` видит истинное состояние и истинный ветер — это верхняя граница для модели, которая видит только датчики. Истинные ветер, порыв, 6-DoF состояние и команда привода пишутся в `POTOKTRJ` сайдкар и никогда не попадают во вход студента.
+03. **Контракт.** Набор данных — не папка `.bin`, а конфиг, сид, схема, truth и манифест. Любой набор пересобирается побайтово и проверяется без человека.
+
+Инженерный прототип. Аэродинамика — плейсхолдеры; среда пригодна для отладки архитектуры, обучения и регрессионных тестов, но **не является цифровым двойником**. Границы допуска ИИ к реальному управлению перечислены ниже, в разделе 08.
+
+---
+
+## 01 / Устройство
+
+```text
+config/default.toml
+        │
+        ▼
+core: динамика 6-DoF, RK4, dt = 0,002 с
+        │
+        ▼
+атмосфера и ветер: профиль / сдвиг / порыв / турбулентность
+        │
+        ▼
+датчики: гиро, удельная сила, магнитометр, барометр, Pitot
+        ├──────────────► кадр UART 56 байт, 50 Гц (potok-protocol)
+        ├──────────────► 8 сырых каналов + 6 физических = 14
+        └──────────────► validation.bin v3 + POTOKTRJ v3
+                                 │
+                                 ▼
+                          potok-m-ai
 ```
 
-Динамика — 6 степеней свободы с переменной массой, RK4 с шагом 0,002 с, стандартная атмосфера, две ступени по паспортам РДК-2000 и РДК-1000. Статический запас — 0,75 калибра. Ветер: степенной профиль по высоте, сдвиговый слой, дискретный порыв 1-cos, коррелированная турбулентность. Датчики: гироскоп, удельная сила в связанных осях, магнитометр, барометр, Pitot.
+| Каталог | Содержание |
+| --- | --- |
+| `core/` | `potok-sim`: динамика, атмосфера, ветер, датчики, сценарии, аэрокарточка, форматы, гейты, эталонный оптимизатор |
+| `cli/` | `potok-cli`: headless-прогон, `generate-dataset`, дашборд на ratatui |
+| `tests/` | `potok-or-parity`: oracle-тест против OpenRocket Simulation 9 |
+| `config/` | `default.toml`, `or_sim9.toml`, `aero_card.toml`, `boundary_profile.csv` |
+| `vehicle/` | решение по аэротрубным продувкам, Ansys/CAD |
+| `docs/` | баннер и документы сайта |
 
-Все случайные величины выводятся из `run.seed` и номера эпизода через `SplitMix64` и локальный `StdRng`; глобального ГПСЧ, часов и зависимости от числа потоков нет — последовательный и параллельный (rayon) прогоны дают идентичные эпизоды. 20 детерминированных ячеек сценариев: 16 обучающих и 4 отложенные (id 16–19). Граница проходит по сочетаниям ветра и порывов, а не по типам ракет. Критерий обобщения: RMSE на отложенных ≤ 1,25 × RMSE на обучающих. Эталонный оптимизатор — LQR-подобная обратная связь по полному состоянию, верхняя граница для модели с датчиков.
+Канонический кадр — 56 байт, 50 Гц, little-endian, кодируется `potok_protocol::encode_request`. Фазы протокола: `BURN=0 → COAST=1 → APOGEE=2 → DESCENT=3 → LANDED=4`; стартовая площадка и разгон оба кодируются как `0`. Флаги — канонические биты `IMU_OK / BARO_OK / PITOT_OK / AI_READY / MOTOR_ARMED / FAULT`; порыв и сдвиг остаются только в симуляторе. Pitot на проводе — `i16` Па.
 
-## Быстрый старт
+---
+
+## 02 / Динамика, две ступени, расхождение с OR
+
+Твёрдое тело, 6 степеней свободы, переменная масса, RK4 с шагом `0,002 с` (500 шагов на 50-Гц тик). Состояние хранится struct-of-arrays (`pos / vel / quat / omega / mass`), инерция диагональная и масштабируется с массой. Ось ракеты — тело +Z, мир +Z вверх. Полёт — 30 с.
+
+Двигатели заданы паспортным минимумом импульса 3,2 кН·с всего:
+
+| Ступень | Паспорт | В конфиге |
+| --- | --- | --- |
+| РДК-2000 | 2,2–2,4 кН·с, 390–400 Н, 5–6 с, 1,88 кг топлива | 400 Н, 5,5 с, 0,342 кг/с |
+| РДК-1000 | 1,0–1,2 кН·с, 260–270 Н, 3–3,5 с, 1,0 кг | 312,5 Н, 3,2 с, 0,3125 кг/с |
+
+Первая ступень отделяется по `stage_sep_time_s = 6.0` с потерей `stage_sep_mass_kg = 2.55` (тест `first_stage_separation_drops_dry_mass`). Выгорание — около 10 с (`burn_end` между 9,9 и 10,0 с). Форма кривой тяги взята из OR Simulation 9; пусковой переходный процесс и пульсации не моделируются. Статический запас — `0,0765 м` (0,75 калибра при внутреннем диаметре 102 мм; около 0,65 калибра при внешнем 118 мм из OR).
+
+**OpenRocket Simulation 9 как оракул.** Источник — `гугугага.ork`, databranch `Маршевая ступень`, апогей `3127,3626 м` на `26,9 с`; фикстура `tests/fixtures/or_sim9.csv` содержит 55 строк на сетке 0,5 с. Что показала сверка (`BUILD_LOG.md`):
+
+- **Закон лобового сопротивления — PASS.** `F = 0.5·ρ·v²·A·cd_axial` с `A = 0,011` даёт ошибку 1,01 / 2,00 / 2,26 / 2,32 % на `t = 5 / 10 / 15 / 20 с`. OR считает лобовое сопротивление по **осевому** `cd_axial` (индекс 35), а не по полному `Cd`.
+- **Наша таблица `Cd(M)` — расхождение, не подгонка.** При номинальном `cd0 = 0,40` она выше OR на 9,9–36,9 %; у эпизода 0 (`cd0 = 0,3204`) разброс −9,9…+10,4 %. Сообщается, не подстраивается.
+- **Исторический провал эпизода 0.** На тот момент апогей `3127,363 → 2927,149 м` (−6,40 %) и `vmax 274,278 → 267,643 м/с` (−2,42 %); 5 из 6 высотных точек вне лимита 5 %. Запись «в пределах 1 %» на том состоянии кода не воспроизвелась, и гейт `episode0_parity_tolerances` был оставлен **намеренно красным**.
+- **Что исправлено.** Конфиг переведён на OR-производную кривую тяги; текущий прогон номинала укладывается в 2,9–3,3 км и 260–290 м/с (`nominal_trajectory_is_plausible`), а `episode0_parity_tolerances` зелёный — 4/4 теста parity. Осталось открытым противоречие ТТХ: M=0,5–0,6 (≈170–200 м/с) против 274 м/с OR при M=0,82.
+
+`Frame` не содержит скорости — `pitot_dp` это шумное насыщаемое `i16` динамическое давление, а не скорость. Поэтому мгновенная скорость с OR не сравнивается; только `Episode.max_speed_mps`, `Episode.apogee_m` и `Frame.height`.
+
+---
+
+## 03 / Команда привода: от угла к ускорению
+
+Здесь была главная ошибка контура. `ReferenceOptimizer::solve` выдавал `g_theta` — угловую поправку [roll, pitch] в радианах, ограниченную `±0,12 рад` (~6,88°), с бесконечно-горизонтальной LQR-обратной связью по положению, скорости, ориентации и угловым скоростям. `dynamics.rs` применял её как угол отклонения руля с выдуманным коэффициентом `FIN_CONTROL_AUTHORITY = 0,02`. Ни один контроллер не мог реально сдвинуть ракету, а эталон в A/B был на 530–590 м **хуже** нулевой команды.
+
+Исправление — физическое отображение, а не подгонка под ученика:
+
+```text
+M_req = m · g_cmd · l                       m — текущая масса RK4, l = 0,25 м
+M_fin = qdyn · A · D · Cm_delta · δ         D = 2·√(A/π)
+δ     = clamp(M_req / (qdyn·A·D·Cm_delta), ±25°)
+moment[axis] += qdyn · A · D · Cm_delta · δ
+```
+
+- **Единица команды — м/с².** `MAX_COMMAND_MPS2 = 10` (около 1 g бокового ускорения). Старое имя `MAX_CONTROL_DEG` оставлено числовым алиасом для совместимости старых control-файлов; его единица теперь м/с².
+- **`Cm_delta` — плейсхолдер `5,0 /рад`**, порядка 1–10 /рад для хвостового управления. Авторитетна аэрокарточка, если задана. Выбор плейсхолдера печатает **COUNTED**-маркер `cm_delta=5 /rad count=N`.
+- **Плечо `0,25 м`** (~2,1 калибра D=0,118 м), механический упор руля `25°` — **COUNTED** `fin_clamp_uses()`.
+- **`qdyn ≤ 1 Па`** при ненулевой команде — безопасный ноль и **COUNTED** `fin_no_authority_uses()`, не деление на ноль.
+- **Не конечное / нулевое / отрицательное `Cm_delta`** при ненулевой команде — **LOUD** `SimError::Control` с именем причины, проходит через `ControlFault` из `derivative`.
+- Гимбал тяги теперь включён только при `thrust > 0`; после выгорания работает аэродинамический руль. Нулевая команда в отображение не заходит — траектория битово идентична исторической.
+
+Эталонная команда `ReferenceOptimizer::fin_accel_command` — это сырой LQR-запрос `(ax, ay)`, ограниченный по `±10 м/с²`, в порядке `[roll, pitch]`; знак проверен по фактически пройденной траектории. A/B на отложенных эпизодах 16–19, сгруппированный боковой RMS:
+
+| seed | нулевая команда | команда м/с² | дельта |
+| ---: | ---: | ---: | ---: |
+| 1 | 1536,930 м | 1045,631 м | −491,299 |
+| 2 | 1516,967 м | 1008,335 м | −508,632 |
+| 3 | 1535,254 м | 1019,964 м | −515,290 |
+
+Неверный знак на seed 1 даёт 1536,930 → 1630,637 м (+93,707): знак измерен, не предположен. Прогон плеча: 0,20 → −459 м; **0,25 → −505 м (отправлено)**; 0,30 → −510 м; 0,40 → −337 м; 0,50 → +113 м (узел раскручивается, `maxw ≈ 23 рад/с`). Это физический потолок полномочий, не поиск выгодного для ИИ коэффициента.
+
+`--control-file` принимает TSV `frame_index g_roll_mps2 g_pitch_mps2` — строго по одному кадру, индексы ровно `0..frames_per_episode`. Комментарии `#` и пустые строки игнорируются; пропуск, дубль, лишняя строка, нечисло и выход за предел — **LOUD** `SimError::Control` с номером строки.
+
+---
+
+## 04 / Ветер, датчики, сиды, сценарии
+
+**Ветер.** Степенной профиль среднего ветра (`v_10`, показатель `0,22`), дискретный сдвиговый слой (высота 150 м, толщина 12 м), дискретный порыв 1-cos (амплитуда 9 м/с, длительность 2 с), коррелированная турбулентность типа Dryden (σ 0,1, интегральный масштаб 60 м, время корреляции 0,25–0,75 с). Срезы порыва и турбулентности генерируются один раз на эпизод; горячий цикл только интерполирует/копирует. `run.fast_field = true` включает таблицу высот, `false` оставляет точную аналитику как референс; расхождение экспортируемых признаков < 1e-2 (`fast_field_matches_exact_analytic_profile`).
+
+**Датчики.** Гироскоп, удельная сила в связанных осях, магнитометр, барометр, Pitot; шум, смещения, запаздывание, квантование, насыщение. Шум акселерометра `0,011 м/с²` из отчёта DELTA (1064 µg), гироскопа `0,0015 рад/с`. Необязательные эффекты по умолчанию выключены и не меняют порядок розыгрыша: `gyro_arw` / `accel_arw` (Allan ARW, дискретное σ = ARW/√dt), `gyro_bias_stability` / `accel_bias_stability` (seeded random walk на смещении), `latency_steps`, `gyro_quant_step` / `accel_quant_step`, `mag_sat` / `baro_sat`, `spike_probability` / `spike_amplitude`. Спайк выставляет канонический бит `FAULT` и закрывает ИИ.
+
+**Сиды.** `episode_seed(root, index)` — SplitMix64-финализатор. Независимые суб-потоки: `INIT` (`0x494E4954`), `SENS` (`0x53454E53`), `WIND` (`0x57494E44`) и `DOMA` (`0x444F4D41`). Добавление `DOMA` для доменизации не сдвинуло исторический порядок розыгрыша INIT/SENS/WIND.
+
+**Сценарии.** 20 детерминированных ячеек: 16 обучающих (id 0–15) и 4 отложенные (id 16–19); `episode_index % 20` выбирает ячейку. Отложенные объединяют крайние значения всех конвертов плюс увеличенное запаздывание датчика (`lag_scale` 1,5–2,0); их сигнатура не встречается в обучающих. Граница проходит по сочетаниям ветра и порывов, а не по типам ракет — воздушная рама одна. Диапазоны доменизации заданы в `core/src/config.rs` (ветер 0–15 м/с, порыв 5–20 м/с, сдвиг 0–8 м/с на 50–400 м, шум гиро 0,0010–0,0020 рад/с, акселерометра 0,008–0,014 м/с²); пресет может их сужать. Критерий обобщения: RMSE на отложенных ≤ 1,25 × RMSE на обучающих.
+
+---
+
+## 05 / Формат набора данных
+
+### validation.bin
+
+80-байтовый заголовок `POTOKSIM`, little-endian. Версия и `target_count` в заголовке являются авторитетом; рассогласование — **LOUD**.
+
+| Версия | Метаданных на эпизод | Целей на тик | Назначение |
+| --- | --- | --- | --- |
+| v1 | 9 | 4 | легаси-читатели |
+| v2 | 17 или 39 | 4 | классическая; 39 = +22 truth-поля |
+| **v3** | **17 или 39** | **6** | текущий writer |
+
+Строка метаданных v2/v3: 9 исходных `f32` (масса, масштаб тяги, начальные pitch/yaw, начало/длительность/амплитуда порыва, `v_10`, сдвиг) → 6 conditioning → `scenario_id` → флаг split. `meta_count` лежит в байтах 48..52 заголовка; 39 — это 17 плюс терминальная truth-запись **последнего** 50-Гц тика.
+
+Порядок полей цели на тик (row-major, `f32`):
+
+| Индекс | v1/v2 | v3 |
+| --- | --- | --- |
+| 0 | `g_roll` | `g_roll` |
+| 1 | `g_pitch` | `g_pitch` |
+| 2 | `confidence` | `confidence` |
+| 3 | `ai_healthy` (0/1) | `ai_healthy` (0/1) |
+| 4 | — | `g_accel_y = ay`, м/с² |
+| 5 | — | `g_accel_x = ax`, м/с² |
+
+`g_theta` (колонки 0–1) остаётся диагностическим/легаси-полем и никогда не перезаписывается. Исполняемая команда привода выводится как `[g_accel_y, −g_accel_x]` в порядке `[roll, pitch]`. Вот почему обучение на `g_theta` давало отрицательный A/B.
+
+Терминальная truth-запись (22 `f32`, индексы после 17 метаданных):
+
+| Индекс | Поле | Единица |
+| --- | --- | --- |
+| 0–2 | истинный ветер X/Y/Z (мир) | м/с |
+| 3 | начало порыва (`−1` = нет) | с |
+| 4 | амплитуда порыва | м/с |
+| 5 | высота сдвигового слоя | м |
+| 6 | скачок скорости сдвига | м/с |
+| 7 | толщина сдвигового слоя | м |
+| 8–10 | истинная позиция X/Y/Z | м |
+| 11–13 | истинная скорость X/Y/Z | м/с |
+| 14–17 | кватернион `(w, x, y, z)` | — |
+| 18–20 | угловая скорость тела X/Y/Z | рад/с |
+| 21 | масса | кг |
+
+### POTOKTRJ (per-tick sidecar)
+
+64-байтовый заголовок: `POTOKTRJ`, version u32, episode_count u32, frames_per_episode u32, stride u32, 40 зарезервированных байт. Далее на эпизод `u64 index` и `frames × stride` `f32`. Writer `generate-dataset` — `write_trajectory_v3`.
+
+| Индекс | v2 / v3 (stride 24 / 26) | Единица |
+| --- | --- | --- |
+| 0–2 | позиция x/y/z (мир) | м |
+| 3–5 | скорость x/y/z (мир) | м/с |
+| 6–9 | кватернион `(w, x, y, z)` | — |
+| 10–12 | угловая скорость тела x/y/z | рад/с |
+| 13 | масса | кг |
+| 14–16 | истинный ветер x/y/z (мир) | м/с |
+| 17 | начало порыва (`−1` = нет) | с |
+| 18 | амплитуда порыва | м/с |
+| 19 | высота сдвига | м |
+| 20 | скачок скорости сдвига | м/с |
+| 21 | толщина сдвига | м |
+| 22–23 | `g_theta` `[roll, pitch]` эталона | рад |
+| 24 | `g_accel_y` (только v3) | м/с² |
+| 25 | `g_accel_x` (только v3) | м/с² |
+
+Индексы 24–25 равны колонкам 4–5 `validation.bin` на том же тике. v1 (stride 6) содержит только `x, y, z, vx, vy, vz`; `read_trajectory` принимает 6/24/26 по версии и stride из заголовка. Чтение v1 оставляет привилегированные поля на явных значениях по умолчанию (`gust_start_s = −1`, остальные нули), v2 — `g_accel = [0, 0]`; догадок нет. Порядок закреплён константами `TRUTH_TICK_NAMES` и `TRUTH_V3_TICK_NAMES`. Отдельно: `--control-file` летит своей командой и молчаливо не подменяется эталонной.
+
+### manifest.json и quality_report.json
+
+`manifest.json`, схема 1, по одному на split: `config_hash` (sha256 канонического TOML), `seed`, `split`, отсортированные `scenario_ids`, счётчики эпизодов/кадров, имена feature/target/truth, наблюдённые min/max и `sha256` + число байт обоих файлов. Никаких timestamp и pid; `serde_json` закреплён на `=1.0.145` с `float_roundtrip` — дефолтный парсер ошибался на 1 ULP на некоторых границах из `f32`.
+
+`quality_report.json`, схема 1: `config_hash`, `seed`, запись на каждый гейт (`name`, `ok`, `detail`), `all_passed`.
+
+**Гейты (14 проверок, все LOUD):** `episode_count` (минимум 4 на split по умолчанию), `frame_count`, `finite`, `feature_bounds`, `target_bounds` (`g_theta` в ±0,12 рад, confidence/health в [0,1], `g_accel` в ±10 м/с²), `truth_bounds` (масса > 0, единичный кватернион, порыв/сдвиг в диапазоне), `split_scenarios_disjoint`, `deterministic_regeneration` — полная вторая генерация, четыре бинарных файла сравниваются побайтово. Ничего не ограничивается и не пропускается; провал — ненулевой выход с именем гейта и проблемным значением.
+
+### generate-dataset
+
+```bash
+cargo run --release -p potok-cli -- generate-dataset \
+  --seed 42 --train-episodes 8 --held-out-episodes 4 \
+  --out dataset/
+```
+
+```text
+dataset/
+├── train/
+│   ├── validation.bin            v3, 17 метаданных, 6 целей, 14 признаков
+│   ├── validation.trajectory     POTOKTRJ v3, stride 26
+│   └── manifest.json
+├── held-out/
+│   ├── validation.bin
+│   ├── validation.trajectory
+│   └── manifest.json
+└── quality_report.json
+```
+
+---
+
+## 06 / CLI
 
 ```bash
 cargo build --release
@@ -42,184 +231,78 @@ cargo test --workspace
 cargo check --workspace
 cargo run --release -p potok-cli -- --help
 
+# headless-прогон с валидацией
 cargo run --release -p potok-cli -- --episodes 20 --physics-features \
   --split train    --validation-out validation/train/
 cargo run --release -p potok-cli -- --episodes 20 --physics-features \
   --split held-out --validation-out validation/heldout/
 
+# замкнутый контур: TSV-команда доходит до динамики
+cargo run --release -p potok-cli -- --control-file commands.tsv --episodes 4
+
+# полный набор с манифестами и гейтами
+cargo run --release -p potok-cli -- generate-dataset --seed 42 \
+  --train-episodes 16 --held-out-episodes 4 --out dataset/
+
 cargo bench -p potok-sim --bench throughput   # эпизоды/с, кадры/с
 ```
 
-`config/default.toml` задаёт 8 выходных каналов; `--physics-features` добавляет шесть производных (`alpha_deg`, `beta_deg`, `q_dyn_kpa`, `a_lat_resid`, `drag_est`, `static_margin_cal`) — итого 14. `--split train|held-out` оставляет одну сторону выборки. Без флагов все прежние команды работают как раньше. Каждая команда пишет `validation.bin` в указанный каталог.
+`config/default.toml` задаёт 8 выходных каналов; `--physics-features` добавляет шесть производных (`alpha_deg`, `beta_deg`, `q_dyn_kpa`, `a_lat_resid`, `drag_est`, `static_margin_cal`) — итого канонические 14. `generate-dataset` использует 14 всегда. `--split train|held-out` оставляет одну сторону выборки. `--serial` отключает rayon. `--tui` включает дашборд; с `--control-file` он запрещён.
 
-## Структура
+---
 
-| Каталог | Содержание |
-| --- | --- |
-| `core/` | `potok-sim`: динамика, атмосфера, ветер, датчики, сценарии, формат валидации, эталонный оптимизатор |
-| `cli/` | `potok-cli`: headless-прогон эпизодов, генерация валидации, дашборд на ratatui |
-| `config/` | `default.toml`, профиль пограничного слоя |
-| `vehicle/` | Решение по аэротрубным продувкам, расчёты Ansys/CAD |
-| `BUILD_LOG.md` | Решения и результаты прогонов |
+## 07 / Тесты и CI
 
-Канонический кадр — 56 байт, 50 Гц, little-endian, кодируется `potok_protocol::encode_request`; фазы протокола `BURN=0 … LANDED=4`. `validation.bin` v2: 80-байтовый заголовок magic `POTOKSIM`, на эпизод — `u64` индекс, 17 метаданных `f32` (9 исходных, 6 conditioning, `scenario_id`, флаг split), затем `frames × features` и `frames × 4` целей. Читается через `potok_sim::validation::read_validation`; версия 1 принимается для совместимости.
+На этом worktree `cargo test --workspace --offline` — **67 passed, 0 failed**:
 
-## Статус и ограничения
+| Цель | Тестов |
+| --- | ---: |
+| `cli/tests/cli_tests.rs` | 9 |
+| `tests/or_parity_tests.rs` | 4 |
+| `core/tests/actuator_mapping_tests.rs` | 8 |
+| `core/tests/control_tests.rs` | 7 |
+| `core/tests/dataset_tests.rs` | 10 |
+| `core/tests/ideal_loop_tests.rs` | 7 |
+| `core/tests/sim_tests.rs` | 16 |
+| `core/tests/smart_sim_tests.rs` | 6 |
 
-- **Аэродинамика — плейсхолдеры.** `cd0`, `cna`, `pitch_damping`, `roll_damping` и таблица `cd_mach` подобраны так, чтобы номинальная траектория попадала в район ТТХ; расчётной карточки OpenRocket/Ansys нет, неопределённость не оценена. Это главный источник расхождения.
-- **Двигатель упрощён.** Форма кривой тяги, пусковой переходный процесс, пики и пульсации не моделируются — только средняя тяга и расход топлива с верхним значением импульса в паспортных диапазонах.
-- **Нет реальной статистики ветра на высотах 0–3 км**, упругости корпуса, аэродинамики приёмника давления, парашютного спуска, продувок в аэротрубе и сравнения с лётным логом.
-- **Расхождение с ТТХ.** Действующее ТТХ — M=0,5–0,6 (≈170–200 м/с) и апогей около 3 км. Номинальный прогон (seed 1337) даёт ≈203 м/с и ≈2,4 км: по скорости симулятор в диапазоне, по апогею не хватает. Доверять ему как единственному источнику истины на пуске нельзя.
+Что закреплено: битовая детерминированность одного сида и различие разных, точные частота и число кадров, отсутствие NaN/Inf за 30 с, гейты по фазам и здоровью датчиков, CRC и round-trip кадра, сходимость быстрого поля с аналитикой, parallel == serial, паспортные ТТХ, отделение первой ступени, соответствие кодов фаз `protocol/uart.yaml`, байт-идентичность золотого запроса, вне-сеточные запросы к аэрокарточке как **LOUD**, COUNTED-маркеры, round-trip v1/v2/v3, отказ от несовпадения версии и `target_count`, работа привода и падение quality-гейтов на испорченных данных.
 
-## Лицензия
+CI — один workflow `sim` (`push`, `pull_request`), job `rust` на `ubuntu-latest`: `actions/checkout@v5` → `dtolnay/rust-toolchain@stable` с `rustfmt, clippy` → `cargo fmt --all -- --check` → `cargo clippy --all-targets` → `cargo test --all-targets`.
 
-MIT.
+Пропускная способность из `BUILD_LOG.md` (12 эпизодов × 1500 кадров, seed 1337, после SoA-оптимизации, с реальными ТТХ): сенсоры + быстрое поле `115,18 эп/с` / `172 766 кадр/с`; без сенсоров `146,68` / `220 019`; сенсоры + точное поле `102,19` / `153 278`. Оговорка: исходный замер сделан до исправления бага индексов производных RK4 (помещались слоты позиции и скорости), поэтому те траектории были невалидными — throughput пригоден только как порядок величины.
 
-## Truth-extended v2 metadata
+---
 
+## 08 / Честные ограничения
 
-`output.truth_metadata = true` (or `write_validation_with_truth`) writes
-**version 3** with `meta_count = 39`: the classic 17 floats plus a 22-float
-truth record captured at the episode's last 50 Hz tick. The header
-`meta_count` is the authority; `read_validation` accepts 9 (v1), 17 (classic
-v2/v3) and 39 (truth-extended v2/v3), so old files and old readers keep
-working. `ValidationEpisode.truth` is `None` for the first two. This terminal
-record is unchanged (no `g_accel`); the per-tick command target lives in the
-v3 sidecar below.
+**Аэродинамика — плейсхолдеры.** `cd0`, `cna`, `pitch_damping`, `roll_damping` и таблица `cd_mach` подобраны так, чтобы номинальная траектория попадала в район ТТХ. Расчётной карточки OpenRocket/Ansys нет, неопределённость не оценена. `[aero] source = "placeholder"` (по умолчанию) печатает COUNTED-маркер на каждом `Simulator::new`; `source = "card"` грузит 2-D сетку, интерполяция билинейная, выход за ось — **LOUD** `SimError::AeroOutOfGrid`, ничего не ограничивается. `config/aero_card.toml` сгенерирован из плейсхолдеров и воспроизводит текущую траекторию битово-в-битово.
 
-| index (after the 17) | field | units |
-|---|---|---|
-| 0–2 | true wind vector at the tick (world X/Y/Z) | m/s |
-| 3 | gust start (`-1` = none) | s |
-| 4 | gust amplitude | m/s |
-| 5 | shear-layer altitude | m |
-| 6 | shear-layer velocity jump | m/s |
-| 7 | shear-layer thickness | m |
-| 8–10 | true position (world X/Y/Z) | m |
-| 11–13 | true velocity (world X/Y/Z) | m/s |
-| 14–17 | true quaternion `(w, x, y, z)` | — |
-| 18–20 | true body angular rate (X/Y/Z) | rad/s |
-| 21 | true mass at the tick | kg |
+**Двигатель упрощён.** Только средняя тяга и расход верхнего импульса в паспортных диапазонах; переходный процесс, пики и пульсации не моделируются.
 
-The terminal truth record above is per-episode (last tick only). For a
-privileged LoopWM teacher, use the per-tick sidecar below.
+**Нет реальной статистики ветра на высотах 0–3 км**, упругости корпуса, аэродинамики приёмника давления, парашютного спуска, продувок в аэротрубе и сравнения с лётным логом. Статистики датчиков частично черновые.
 
-#### Per-tick privileged truth sidecar (POTOKTRJ v2)
+**Расхождение с ТТХ не закрыто.** Даже после выравнивания с OR остаётся вилка между M=0,5–0,6 из ТТХ и 274 м/с при M=0,82 в OR Simulation 9. Аэродинамический `Cd` всё ещё на 10–37 % выше OR-осевого. Ни одна из этих цифр не подгонялась под модель.
 
-`write_trajectory` still writes **version 1**: 64-byte header (`POTOKTRJ`,
-`version=1`, episode_count u32, frames_per_episode u32, `stride=6`, 40 reserved)
-and `frames x 6` f32 per episode (`x, y, z, vx, vy, vz`). Every old reader and
-binary file keeps working.
+**Что уже исправлено и почему это важно:**
 
-`write_trajectory_v2` still writes **version 2** with the same 64-byte header
-and `stride=24` (unchanged bytes). The writer used by `generate-dataset` is
-`write_trajectory_v3`, **version 3, `stride=26`**: the 24 v2 fields plus two
-appended floats per tick. The v2 field order is:
+- конфиг изначально описывал ракету ~130 кг с тягой 12 кН и площадью 0,0707 м² против реальных 13 кг и 0,00817 м² — ошибка на порядок по массе и в 8,6 раза по площади; исправлено;
+- баг индексов производных RK4 (слоты позиции и скорости были перепутаны) и чтение скорости вместо ускорения в сенсорном тракте — исправлено;
+- разомкнутый контур: `g_theta` записывался в цель, а `rk4` интегрировал неизменный `Vehicle` — добавлен seam `--control-file`;
+- отображение привода: угол с выдуманным полномочием заменён на запрос бокового ускорения м/с² с моментным балансом, плейсхолдером `Cm_delta` и COUNTED/LOUD-маркерами;
+- экспорт цели: обучение на `g_theta` заменено на `g_accel`; v3 и POTOKTRJ v3 несут именно ту команду, которую потребляет солвер.
 
-| index | field | units |
-|---|---|---|
-| 0–2 | world position x/y/z | m |
-| 3–5 | world velocity x/y/z | m/s |
-| 6–9 | quaternion `(w, x, y, z)` | — |
-| 10–12 | body angular rate x/y/z | rad/s |
-| 13 | mass | kg |
-| 14–16 | true wind x/y/z (world frame) | m/s |
-| 17 | gust start (`-1` = none) | s |
-| 18 | gust amplitude | m/s |
-| 19 | shear-layer altitude | m |
-| 20 | shear velocity jump | m/s |
-| 21 | shear-layer thickness | m |
-| 22–23 | reference optimizer `g_theta` `[roll, pitch]` | rad |
-| 24 | `g_accel_y` (v3 only) | m/s² |
-| 25 | `g_accel_x` (v3 only) | m/s² |
+**Критерии допуска ИИ к реальному управлению** (`SIM_FIDELITY.md`): (1) номинальная траектория в пределах 10 % по скорости и 15 % по апогею от OR/Ansys и первого лётного лога; (2) статистики датчиков в пределах двух раз от стендовых измерений вариацией Аллана; (3) выигрыш на отложенных сценариях с порывом больше разброса трёх сидов минимум в три раза; (4) реальный полёт прокручивается через симулятор, и выход модели на реальных кадрах совпадает в пределах ошибки датчиков; (5) первые пуски с постепенным α, вето в коде и журнал всех поправок. Пока 1–4 не выполнены, ИИ остаётся наблюдателем.
 
-Indices 24–25 equal validation target columns 4–5 on the same tick, and the
-fin command is again `[24, -25]`. `read_trajectory` accepts all three versions:
-the header version and stride are the authority (6 / 24 / 26), and a v1 read
-leaves the privileged fields at explicit defaults (`gust_start_s = -1`,
-everything else zero), never at guessed values. A v2 read leaves `g_accel` at
-`[0, 0]`. The order is pinned by `trajectory::TRUTH_TICK_NAMES` and
-`TRUTH_V3_TICK_NAMES`. `g_theta` and `g_accel` are the reference optimizer's
-targets; a `--control-file` run flies its own command and is not silently
-substituted.
+---
 
-## Dataset manifest and quality gates
+## 09 / Ссылки
 
-`generate-dataset --seed S --train-episodes M --held-out-episodes K --out DIR`
-writes:
+- [potok-m — документация проекта](https://rocket-team-m.github.io/potok-m/)
+- [potok-m — SPEC_ENGINE_IDEAL.md](https://github.com/rocket-team-m/potok-m/blob/main/SPEC_ENGINE_IDEAL.md)
+- [potok-m-ai](https://github.com/rocket-team-m/potok-m-ai) — потребитель `validation.bin` / `POTOKTRJ`
+- [potok-m-protocol](https://github.com/rocket-team-m/potok-m-protocol) — генератор кадров UART
+- [potok-m-firmware](https://github.com/rocket-team-m/potok-m-firmware) — бортовой контур
+- Локально: [BUILD_LOG.md](BUILD_LOG.md), [SIM_FIDELITY.md](SIM_FIDELITY.md), [SPEC_DATA.md](SPEC_DATA.md)
 
-```
-DIR/train/validation.bin                (v3, 17 metadata floats, 6 targets)
-DIR/train/validation.trajectory         (POTOKTRJ v3, stride 26)
-DIR/train/manifest.json
-DIR/held-out/validation.bin
-DIR/held-out/validation.trajectory
-DIR/held-out/manifest.json
-DIR/quality_report.json
-```
-
-Each manifest is deterministic JSON (schema version 1): effective config hash
-(sha256 of canonical TOML), seed, split, sorted scenario ids, episode/frame
-counts, feature/target/truth names, observed min/max bounds, and `sha256` +
-byte count of `validation.bin` and its sidecar. No timestamps or process ids.
-The model frame is the canonical 14 channels (eight raw + six physics).
-
-Before writing the manifests the generator re-reads the files it wrote and
-runs LOUD gates: finite values everywhere, disjoint train/held-out scenario
-sets, feature limits, `g_theta` within +/-0.12 rad, `g_accel_*` within
-+/-10 m/s², confidence/health in `[0,1]`, plausible truth (mass > 0, unit
-quaternion, gust/shear in range),
-consistent frame counts, at least `--min-episodes-per-split` (default 4), and
-a full second generation whose four binary files must be byte-identical.
-Any failure exits nonzero with the gate name and offending value; nothing is
-clamped or skipped. `quality_report.json` records every passing check.
-
-## Aero coefficient card
-
-`[aero] source = "placeholder"` (default) keeps the legacy analytic model and
-prints a **COUNTED** marker line to stderr on each `Simulator::new`
-(`aero::placeholder_uses()` is the counter). `source = "card"` loads the 2-D
-grid named by `card_path`, resolved like `boundary_profile`.
-`config/aero_card.toml` is a documented example generated from the
-placeholder coefficients: selecting it reproduces the current trajectory
-bit-for-bit (covered by `generated_card_reproduces_placeholder_and_placeholder_is_counted`).
-
-Each channel (`cd0`, `cna`, `pitch_damping`, `cm_delta`) is a rectangular grid
-of `values[alpha][mach]` rows. Interpolation is bilinear and coefficients are
-evaluated at each RK4 sub-stage. Any query outside a grid axis is a **LOUD**
-`SimError::AeroOutOfGrid` (returned by `interpolate`, and propagated out of
-`run_episode`); nothing is clamped. `cm_delta` adds a gimbal control moment
-proportional to `q_dyn·A·D`; the example card sets it to zero.
-
-## Sensor realism knobs
-
-All new `[sensor]` knobs default to **off/zero**, so old configs and tests are
-unchanged. `gyro_arw` / `accel_arw` are Allan angle/velocity random-walk
-densities (discrete std = ARW / √dt); `gyro_bias_stability` /
-`accel_bias_stability` drive a seeded random walk on the constant bias.
-`latency_steps` delays whole frames; `gyro_quant_step` / `accel_quant_step`
-override `quant_step` per channel; `mag_sat` / `baro_sat` add optional limits;
-`spike_probability` / `spike_amplitude` inject a seeded measurement spike that
-sets the canonical FAULT bit and gates the AI. Every draw comes from the
-episode's `SENS` sub-seed, so runs stay reproducible.
-
-`potok_sim::validation::read_validation` parses the format; a round-trip test
-covers it. Note that an AI-side reader must use the v2 layout when consuming
-files produced by the new writer.
-
-## Reference optimizer
-
-`g_theta = [roll, pitch]` is an LQR-style full-state feedback (lateral
-position/velocity error → desired tilt, minus body-rate damping), clamped to
-±0.12 rad, with an infinite-horizon approximation rather than a solved
-Riccati equation or online MPC. It sees true state and wind, so it is an upper
-bound on the sensor-only model. It is zeroed on pad/boost by the AI interlock.
-
-The exported command target is **not** `g_theta`. `ReferenceOptimizer`
-computes the same raw LQR demand `(ax, ay)` and clamps it to the actuator
-envelope as `[ax, ay]` (`world_accel_command`); the dataset writes it as
-`[g_accel_y, g_accel_x] = [ay, ax]`. The fin solver consumes
-`fin_accel_command = [g_accel_y, -g_accel_x]` m/s² in `[roll, pitch]` order
-and converts it to a fin deflection by a moment balance. Training on
-`g_theta` instead of this pair was the cause of the negative closed-loop A/B;
-`g_theta` remains as a diagnostic/legacy column only.
+Лицензия: MIT.

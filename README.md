@@ -306,3 +306,5 @@ CI — один workflow `sim` (`push`, `pull_request`), job `rust` на `ubuntu
 - Локально: [BUILD_LOG.md](BUILD_LOG.md), [SIM_FIDELITY.md](SIM_FIDELITY.md), [SPEC_DATA.md](SPEC_DATA.md)
 
 Лицензия: GPL-3.0-or-later (или коммерческая).
+
+Репозитории: [potok-m](https://github.com/rocket-team-m/potok-m) · [potok-m-ai](https://github.com/rocket-team-m/potok-m-ai) · [potok-m-edge](https://github.com/rocket-team-m/potok-m-edge) · [potok-m-sim](https://github.com/rocket-team-m/potok-m-sim) · [potok-m-protocol](https://github.com/rocket-team-m/potok-m-protocol) · [potok-m-firmware](https://github.com/rocket-team-m/potok-m-firmware) · [potok-m-3d](https://github.com/rocket-team-m/potok-m-3d).

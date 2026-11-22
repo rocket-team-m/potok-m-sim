@@ -13,7 +13,7 @@ toml.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 # Canonical wire layout: single source of truth is ../protocol/uart.yaml.
-potok-protocol = { path = "../../protocol/potok-protocol" }
+potok-protocol = { git = "https://github.com/rocket-team-m/potok-m-protocol.git", branch = "main" }
 
 [dev-dependencies]
 serde.workspace = true

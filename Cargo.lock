@@ -1091,6 +1091,7 @@ dependencies = [
 [[package]]
 name = "potok-protocol"
 version = "0.1.0"
+source = "git+https://github.com/rocket-team-m/potok-m-protocol.git?branch=main#fdc485d14e8e10f500c2b81fce4ca9e5b1e64a55"
 
 [[package]]
 name = "potok-sim"

@@ -305,4 +305,4 @@ CI — один workflow `sim` (`push`, `pull_request`), job `rust` на `ubuntu
 - [potok-m-firmware](https://github.com/rocket-team-m/potok-m-firmware) — бортовой контур
 - Локально: [BUILD_LOG.md](BUILD_LOG.md), [SIM_FIDELITY.md](SIM_FIDELITY.md), [SPEC_DATA.md](SPEC_DATA.md)
 
-Лицензия: MIT.
+Лицензия: GPL-3.0-or-later (или коммерческая).

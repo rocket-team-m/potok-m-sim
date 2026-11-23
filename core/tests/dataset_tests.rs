@@ -330,18 +330,18 @@ fn fin_accel_command_matches_the_exported_command_target() {
     // The same command survives both v3 exports.
     let dir = temp_dir("fin-accel");
     let validation = dir.join("validation.bin");
-    write_validation(&validation, &Config::default(), &[ep.clone()]).unwrap();
+    write_validation(&validation, &Config::default(), std::slice::from_ref(&ep)).unwrap();
     let sidecar = sidecar_path(&validation);
-    write_trajectory_v3(&sidecar, &Config::default(), &[ep.clone()]).unwrap();
+    write_trajectory_v3(&sidecar, &Config::default(), std::slice::from_ref(&ep)).unwrap();
     let v = read_validation(&validation).unwrap();
     let t = read_trajectory(&sidecar).unwrap();
-    for i in 0..ep.targets.len() {
+    for (i, cmd) in commands.iter().enumerate() {
         let y = v.episodes[0].targets[[i, 4]];
         let x = v.episodes[0].targets[[i, 5]];
         assert_eq!(y, t.episodes[0].ticks[i].g_accel[0]);
         assert_eq!(x, t.episodes[0].ticks[i].g_accel[1]);
-        assert!((commands[i].0 - y as f64).abs() < 2e-6);
-        assert!((commands[i].1 + x as f64).abs() < 2e-6);
+        assert!((cmd.0 - y as f64).abs() < 2e-6);
+        assert!((cmd.1 + x as f64).abs() < 2e-6);
     }
 }
 

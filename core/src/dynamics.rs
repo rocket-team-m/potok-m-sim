@@ -544,7 +544,7 @@ pub fn derivative(t: f64, s: &State, wind: Vec3, atm: &Atmosphere, v: &Vehicle) 
     if v.control_accel[0] != 0.0 || v.control_accel[1] != 0.0 {
         let diameter = 2.0 * (v.aero.area_m2 / std::f64::consts::PI).sqrt();
         let authority = qdyn * v.aero.area_m2 * diameter * cm_delta;
-        for axis in 0..2 {
+        for (axis, moment_axis) in moment.iter_mut().enumerate().take(2) {
             match solve_fin_deflection(
                 v.control_accel[axis],
                 mass,
@@ -553,7 +553,7 @@ pub fn derivative(t: f64, s: &State, wind: Vec3, atm: &Atmosphere, v: &Vehicle) 
                 cm_delta,
                 v.aero.control_moment_arm_m,
             ) {
-                Ok(delta) => moment[axis] += authority * delta,
+                Ok(delta) => *moment_axis += authority * delta,
                 Err(fault) => v.control_fault.set(Some(fault)),
             }
         }

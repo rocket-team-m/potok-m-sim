@@ -254,6 +254,9 @@ impl Sensor {
         }
     }
 
+    // One sensor sample carries nine independent inputs; a params struct would
+    // only move the same arity to the call sites.
+    #[allow(clippy::too_many_arguments)]
     pub fn measure(
         &mut self,
         seq: u16,

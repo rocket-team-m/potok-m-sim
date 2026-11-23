@@ -215,19 +215,14 @@ fn default_accel_noise_range() -> Range {
     Range(0.008, 0.014)
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AeroSource {
     /// Legacy analytic coefficients (default). Prints a COUNTED marker.
+    #[default]
     Placeholder,
     /// Bilinear interpolation of a 2-D (Mach, alpha) TOML coefficient card.
     Card,
-}
-
-impl Default for AeroSource {
-    fn default() -> Self {
-        Self::Placeholder
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -1,6 +1,9 @@
 //! potok-cli: headless episode runner and ratatui dashboard.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use clap::{Parser, Subcommand};
 use potok_cli::tui;
@@ -504,7 +507,7 @@ fn write_split(dir: &PathBuf, cfg: &Config, episodes: &[Episode]) -> Result<(), 
 }
 
 fn read_split(
-    dir: &PathBuf,
+    dir: &Path,
 ) -> Result<
     (
         potok_sim::validation::ValidationSet,
@@ -525,7 +528,7 @@ fn build_manifest(
     split: Split,
     v: &potok_sim::validation::ValidationSet,
     _t: &potok_sim::TrajectorySet,
-    dir: &PathBuf,
+    dir: &Path,
     bounds: Bounds,
 ) -> Result<DatasetManifest, CliError> {
     let mut scenario_ids: Vec<u16> = v.episodes.iter().map(|e| e.scenario_id).collect();

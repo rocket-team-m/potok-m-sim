@@ -356,6 +356,8 @@ pub fn check_dataset(
     let mut bad_truth = Vec::new();
     for e in &t.episodes {
         for (i, tick) in e.ticks.iter().enumerate() {
+            // Negated comparison is deliberate: NaN must fail this bound too.
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
             if !(tick.mass_kg > 0.0) {
                 bad_truth.push(format!(
                     "episode {} tick {i} mass={}",

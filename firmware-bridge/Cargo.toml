@@ -1,0 +1,12 @@
+[package]
+name = "potok-firmware-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Real firmware-in-the-loop bridge: runs the pinned potok-m-firmware step() on sim frames"
+
+[dependencies]
+potok-sim = { path = "../core" }
+# The actual flight-firmware crate, pinned byte-for-byte. Its host-testable
+# logic (link, phase FSM, interlocks, watchdog policy) is compiled and run here.
+potok-m-firmware = { git = "https://github.com/rocket-team-m/potok-m-firmware.git", rev = "dfba1305c8dc2c17c3e9ca5fa83c25cafed3b4c4" }

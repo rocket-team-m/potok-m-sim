@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "tests"]
+members = ["core", "cli", "tests", "firmware-bridge"]
 
 [workspace.package]
 version = "0.1.0"

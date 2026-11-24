@@ -112,6 +112,31 @@ without fabricating air data; the pitot-validity gate uses the frame's real
 `WatchdogPolicy` (AI latch and deadman), `MockBoard`, the local seq and the
 phase-rank tracker. Nothing from the previous run survives.
 
+## CLI runner
+
+`cargo run -p potok-cli -- --episodes 1 --firmware-guard` runs the same bridge
+through `HostAdapter<FirmwareLinkControl, MockAdapter>` and prints the firmware
+interlock counters. This is a real firmware decision path with a deterministic
+stand-in producer, not the trained AI and not HIL.
+
+## Observed default-run integration finding (2026-11-25)
+
+On the shipped default trajectory, one 30 s episode reports:
+
+```
+firmware first FAULT flag t=7800000us pitot_dp=30058Pa phase=Boost
+episode 0: ... fw_accepted=0 fw_blocked=1500 fw_trips=1 fw_latched=Some(Fault)
+```
+
+The simulator sets the wire `FAULT` bit when the pitot reading saturates at
+`pitot_sat = 30000 Pa` (and above the i16 ceiling). The real firmware's
+`Interlocks` latch `Fault` permanently, so no AI command can be accepted for the
+rest of that flight. This is not hidden by the bridge and is not fixed here: it
+needs a protocol/hardware decision (a wider or scaled pitot field, a larger
+sensor range, or a separate saturation bit that maps to a transient
+`PitotInvalid` rather than a latching `Fault`). It is a real consequence of the
+new firmware being in the loop, not a bridge bug.
+
 ## Gates
 
 `firmware-bridge/tests/bridge_tests.rs` proves the firmware code ran, not just

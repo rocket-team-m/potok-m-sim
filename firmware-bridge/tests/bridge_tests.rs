@@ -2,7 +2,7 @@
 //! Gates that can only pass if the real firmware crate ran.
 
 use potok_firmware_bridge::{mps2_to_raw, raw_to_mps2, FirmwareLinkControl};
-use potok_m_firmware::protocol::Phase as FwPhase;
+use potok_m_firmware::{interlocks::Refusal, protocol::Phase as FwPhase};
 use potok_sim::{
     dynamics::Phase,
     firmware_adapter::{Command, HostControl},
@@ -166,6 +166,19 @@ fn phase_events_are_emitted_once_and_only_forward() {
         );
         assert_eq!(ctl.fsm().phase(), expected, "step {i} ({phase:?})");
     }
+}
+
+#[test]
+fn fault_flag_latches_the_firmware_interlock() {
+    let mut ctl = FirmwareLinkControl::new();
+    let mut bad = frame(Phase::Coast, 0, 1000);
+    // A saturated sensor is represented by the wire FAULT bit. The firmware's
+    // independent interlock must latch, not merely zero one tick.
+    bad.flags = wire_flags(Phase::Coast, true, true, true);
+    let out = ctl.decide(&bad, demand(6.0, 0.0, true));
+    assert_eq!(out.ay, 0.0);
+    assert_eq!(ctl.interlock().latched(), Some(Refusal::Fault));
+    assert!(ctl.link().is_disabled() || ctl.interlock().latched().is_some());
 }
 
 #[test]

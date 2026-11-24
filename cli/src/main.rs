@@ -1,12 +1,14 @@
 //! potok-cli: headless episode runner and ratatui dashboard.
 
 use std::{
+    cell::{Cell, RefCell},
     fs,
     path::{Path, PathBuf},
 };
 
 use clap::{Parser, Subcommand};
 use potok_cli::tui;
+use potok_firmware_bridge::FirmwareLinkControl;
 use thiserror::Error;
 
 use potok_sim::{
@@ -14,6 +16,7 @@ use potok_sim::{
     control::ControlFile,
     episode::Episode,
     file_record,
+    firmware_adapter::{FirmwareAdapter, HostAdapter, MockAdapter},
     manifest::{Bounds, DatasetManifest},
     quality::{
         check_dataset, check_determinism, check_split_disjoint, observed_bounds, QualityReport,
@@ -52,6 +55,9 @@ struct Args {
     /// Keep only one side of the withheld-scenario split in the validation file.
     #[arg(long, value_enum, default_value_t = SplitArg::All, value_name = "SPLIT")]
     split: SplitArg,
+    /// Run commands through the real firmware crate (firmware-bridge).
+    #[arg(long)]
+    firmware_guard: bool,
     /// Append the six physics features to the eight default channels (14 total).
     #[arg(long)]
     physics_features: bool,
@@ -113,6 +119,8 @@ enum CliError {
     NoEpisodes,
     #[error("--control-file requires headless generation (drop --tui)")]
     ControlTui,
+    #[error("--firmware-guard cannot be combined with --control-file or --tui")]
+    FirmwareGuardConflict,
 }
 
 fn main() {
@@ -172,10 +180,15 @@ fn run(args: Args) -> Result<(), CliError> {
     if args.tui && control.is_some() {
         return Err(CliError::ControlTui);
     }
+    if args.firmware_guard && (control.is_some() || args.tui) {
+        return Err(CliError::FirmwareGuardConflict);
+    }
 
     let wants_validation = args.validation_out.is_some()
         || matches!(cfg.output.mode, OutputMode::Validation | OutputMode::Both);
-    let episodes = if let Some(control) = &control {
+    let episodes = if args.firmware_guard {
+        headless_with_firmware(&sim, &cfg, &config_path, args.episodes)
+    } else if let Some(control) = &control {
         headless_with_control(&sim, &cfg, &config_path, args.episodes, control)
     } else if args.tui {
         tui::run_interactive(&sim, args.episodes, &config_path).map_err(CliError::Terminal)?
@@ -240,6 +253,75 @@ fn headless(sim: &Simulator, cfg: &Config, config_path: &str, count: usize) -> V
         }
     }
     println!("total: frames={total_frames} errors={total_errors}");
+    episodes
+}
+
+/// Runs the real firmware crate against the simulator. The bridge implements
+/// the simulator's `HostControl` seam with `LinkState`, `PhaseFsm`, `Interlocks`,
+/// `WatchdogPolicy` and `control::step`; the AI producer is a deterministic
+/// stand-in, not a trained model. A full-scale raw↔m/s² mapping is used because
+/// no physical actuator calibration exists (see firmware-bridge docs).
+fn headless_with_firmware(
+    sim: &Simulator,
+    cfg: &Config,
+    config_path: &str,
+    count: usize,
+) -> Vec<Episode> {
+    let mut episodes = Vec::new();
+    let mut errors = 0usize;
+    println!(
+        "firmware: pin=dfba1305c8dc2c17c3e9ca5fa83c25cafed3b4c4 seed={} episodes={} config={config_path}",
+        cfg.run.seed, count
+    );
+    for i in 0..count as u64 {
+        let seed = cfg.run.seed ^ i;
+        let adapter = RefCell::new(HostAdapter::new(
+            FirmwareLinkControl::new(),
+            MockAdapter::new(seed),
+            seed,
+        ));
+        let last_phase = Cell::new(None);
+        let fault_seen = Cell::new(false);
+        match sim.run_episode_with_control(i, &|frame| {
+            if frame.flags & 0x80 != 0 && !fault_seen.get() {
+                fault_seen.set(true);
+                eprintln!(
+                    "firmware: first FAULT flag t={}us pitot_dp={}Pa phase={:?}",
+                    frame.time_us, frame.pitot_dp, frame.phase
+                );
+            }
+            let mut adapter = adapter.borrow_mut();
+            if last_phase.get() != Some(frame.phase) {
+                adapter.on_phase(frame.phase);
+                last_phase.set(Some(frame.phase));
+            }
+            let command = adapter.step(frame);
+            (f64::from(command.ay), f64::from(command.ax))
+        }) {
+            Ok(episode) => {
+                let control = adapter.borrow();
+                let counters = control.control().interlock().counters;
+                let latched = control.control().interlock().latched();
+                println!(
+                    "episode {:>4}: frames={} apogee={:.1}m lateral_rms={:.1}m max_speed={:.1}m/s fw_accepted={} fw_blocked={} fw_trips={} fw_latched={latched:?}",
+                    episode.meta.index,
+                    episode.frames.len(),
+                    apogee_m(&episode.trajectory),
+                    lateral_rms_m(&episode.trajectory),
+                    episode.max_speed_mps,
+                    counters.accepted,
+                    counters.blocked,
+                    counters.trips,
+                );
+                episodes.push(episode);
+            }
+            Err(error) => {
+                errors += 1;
+                eprintln!("episode error: {error}");
+            }
+        }
+    }
+    println!("total: episodes={} errors={errors}", episodes.len());
     episodes
 }
 

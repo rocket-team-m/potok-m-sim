@@ -1672,6 +1672,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "crossterm",
+ "potok-firmware-bridge",
  "potok-sim",
  "ratatui",
  "thiserror 2.0.21",

@@ -643,6 +643,12 @@ pub fn rk4(t: f64, s: &State, dt: f64, wind: Vec3, atm: &Atmosphere, v: &Vehicle
     o
 }
 
+/// Canonical rule: a stationary pad before boost (`t <= 0`) is Pad, never
+/// Landed. The true-position ground guard is checked first here on purpose:
+/// with every shipped thrust profile liftoff happens well before 0.5 s, so a
+/// true `pos[2] <= 0` at `t > 0.5 s` is a landing, not a delayed pad. The
+/// replay orders Pad -> Boost -> ground instead because its baro height is a
+/// noisy proxy, not true position, and must not pre-empt powered flight.
 pub fn phase_at(t: f64, s: &State, v: &Vehicle) -> Phase {
     if s.pos[2] <= 0.0 && t > 0.5 {
         return Phase::Landed;

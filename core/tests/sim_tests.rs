@@ -4,7 +4,7 @@ use potok_protocol as proto;
 use potok_sim::{
     atmosphere::Atmosphere,
     config::Config,
-    dynamics::{derivative, rk4, Phase, State, Vehicle},
+    dynamics::{derivative, phase_at, rk4, Phase, State, Vehicle},
     math::{episode_seed, lerp_table},
     sensor::{gating, wire_flags, FLAG_AI_READY, FLAG_FAULT, FLAG_MOTOR_ARMED},
     validation::{
@@ -346,6 +346,78 @@ fn protocol_phase_codes_match_uart_yaml() {
         wire_flags(Phase::Coast, true, true, false) & FLAG_AI_READY,
         FLAG_AI_READY
     );
+}
+
+#[test]
+fn phase_at_keeps_pad_ahead_of_true_ground_and_pins_thresholds() {
+    // The simulator's ground guard runs on TRUE pos[2]. A stationary pad
+    // before boost (t <= 0) is Pad, even at or below zero altitude; the
+    // replay needs Pad -> Boost -> ground only because its baro height is a
+    // proxy, not truth. No threshold below is relaxed: 0.5 s, 5 m, 10 m and
+    // |v|^2 < 4 are all pinned at their exact boundaries.
+    let cfg = Config::default();
+    let v = Vehicle::from_config(&cfg, 10.9, 1.0, [0.0, 0.0]);
+    let burn_end = v.burn_end();
+    assert!((burn_end - 9.95).abs() < 1e-9, "burn_end {burn_end}");
+
+    let st = |z: f64, vx: f64, vz: f64| State {
+        pos: [0.0, 0.0, z],
+        vel: [vx, 0.0, vz],
+        ..State::zeros()
+    };
+
+    // (t, true altitude, lateral speed, vertical speed, expected)
+    let cases = [
+        // Pad: stationary, at/below zero altitude, before boost.
+        (-1.0, 0.0, 0.0, 0.0, Phase::Pad),
+        (0.0, 0.0, 0.0, 0.0, Phase::Pad),
+        (-1.0, -5.0, 0.0, 0.0, Phase::Pad),
+        // Boost: stationary pad just after ignition is Boost, not Landed.
+        (0.5, 0.0, 0.0, 0.0, Phase::Boost),
+        (0.6, 100.0, 0.0, 30.0, Phase::Boost),
+        (burn_end, 200.0, 0.0, 40.0, Phase::Boost),
+        // Landed: true ground contact; guard is strictly t > 0.5.
+        (0.5001, 0.0, 0.0, 0.0, Phase::Landed),
+        (burn_end + 0.001, 0.0, 0.0, 0.0, Phase::Landed),
+        // Coast / Apogee: |v|^2 < 4 needs alt > 10; sim uses full velocity.
+        (burn_end + 0.001, 100.0, 0.0, 30.0, Phase::Coast),
+        (burn_end + 0.001, 100.0, 2.0, 0.0, Phase::Coast),
+        (burn_end + 0.001, 100.0, 0.0, 2.0, Phase::Coast),
+        (burn_end + 0.001, 100.0, 0.0, 1.999, Phase::Apogee),
+        (burn_end + 0.001, 10.0, 0.0, 0.0, Phase::Coast),
+        (burn_end + 0.001, 10.1, 0.0, 0.0, Phase::Apogee),
+        // Descent / Landed: 5 m boundary on the downward branch.
+        (burn_end + 0.001, 10.1, 0.0, -20.0, Phase::Descent),
+        (burn_end + 0.001, 5.0, 0.0, -20.0, Phase::Descent),
+        (burn_end + 0.001, 4.999, 0.0, -20.0, Phase::Landed),
+    ];
+    for (t, z, vx, vz, expected) in cases {
+        assert_eq!(
+            phase_at(t, &st(z, vx, vz), &v),
+            expected,
+            "t={t} z={z} vx={vx} vz={vz}"
+        );
+    }
+
+    // On default truth the rail releases well before 0.5 s, so the guard
+    // never calls a pad Landed: no frame before burn-out is Landed.
+    let e = sim().run_episode(0).unwrap();
+    let powered = e
+        .frames
+        .iter()
+        .filter(|f| matches!(f.phase, Phase::Pad | Phase::Boost))
+        .count();
+    assert!(powered > 0, "no pad/boost frames");
+    for f in &e.frames {
+        let t = f.time_us as f64 / 1_000_000.0;
+        if t <= burn_end {
+            assert!(
+                matches!(f.phase, Phase::Pad | Phase::Boost),
+                "t={t} phase={:?} before burn-out",
+                f.phase
+            );
+        }
+    }
 }
 
 #[test]

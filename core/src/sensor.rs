@@ -386,12 +386,8 @@ impl Sensor {
             out.baro = clamp(out.baro, -self.cfg.baro_sat, self.cfg.baro_sat);
             saturated = true;
         }
-        let pitot = out.pitot;
-        if pitot.abs() > self.cfg.pitot_sat || pitot > i16::MAX as f64 || pitot < i16::MIN as f64 {
-            saturated = true;
-        }
-        let pitot_dp = clamp(pitot, i16::MIN as f64, i16::MAX as f64).round() as i16;
-        let pitot_valid = norm(v_rel) > 3.0 && pitot_dp > 0;
+        let (pitot_dp, pitot_wire_valid) = pitot_wire(out.pitot, self.cfg.pitot_sat);
+        let pitot_valid = pitot_wire_valid && norm(v_rel) > 3.0 && pitot_dp > 0;
         if out.spike {
             saturated = true;
         }
@@ -434,6 +430,18 @@ impl Sensor {
         let u2 = self.rng.gen::<f64>();
         (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
     }
+}
+
+/// Convert a physical pitot pressure to the wire field. A saturated or
+/// unrepresentable reading is an *invalid* sample, not a sensor fault: returning
+/// zero keeps the firmware's pitot-validity gate transient instead of latching
+/// the permanent `FAULT` bit. Resolution is 1 Pa; the i16 field tops out at
+/// 32.767 kPa, so above that no valid reading exists in this wire format.
+fn pitot_wire(pitot_pa: f64, sat_pa: f64) -> (i16, bool) {
+    if !pitot_pa.is_finite() || pitot_pa < 0.0 || pitot_pa > sat_pa || pitot_pa > i16::MAX as f64 {
+        return (0, false);
+    }
+    (pitot_pa.round() as i16, true)
 }
 
 fn quant(v: f64, step: f64) -> f64 {
@@ -493,4 +501,19 @@ pub fn feature(frame: &Frame, name: &str) -> Option<f32> {
         "static_margin_cal" => frame.physics[5],
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pitot_wire;
+
+    #[test]
+    fn saturated_or_unrepresentable_pitot_is_invalid_not_a_fault_zero() {
+        assert_eq!(pitot_wire(1000.0, 30_000.0), (1000, true));
+        assert_eq!(pitot_wire(30_058.0, 30_000.0), (0, false));
+        assert_eq!(pitot_wire(40_000.0, 60_000.0), (0, false));
+        assert_eq!(pitot_wire(-1.0, 30_000.0), (0, false));
+        assert_eq!(pitot_wire(f64::NAN, 30_000.0), (0, false));
+        assert_eq!(pitot_wire(32_766.0, 40_000.0), (32_766, true));
+    }
 }
